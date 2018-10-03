@@ -101,8 +101,8 @@ def _plot_loss_2d(first_param_grid, second_param_grid, sampled_params, sampled_l
     X, Y = np.meshgrid(first_param_grid, second_param_grid, indexing='ij')
 
     # EI contour plot
-    cp = ax1.contourf(X, Y, ei.reshape(X.shape))
-    plt.colorbar(cp, ax=ax1)
+    cp = ax1.contour(X, Y, ei.reshape(X.shape))
+    #plt.colorbar(cp, ax=ax1)
     ax1.set_title("Expected Improvement. Next sample will be (%.2f, %.2f)" % (next_sample[0], next_sample[1]))
     ax1.autoscale(False)
     ax1.axvline(next_sample[0], color='k')
