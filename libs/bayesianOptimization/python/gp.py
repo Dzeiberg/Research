@@ -5,9 +5,20 @@ Bayesian optimisation of loss functions.
 
 import numpy as np
 import sklearn.gaussian_process as gp
-
+from pyswarm import pso
 from scipy.stats import norm
 from scipy.optimize import minimize
+
+def lowerConfidenceBound(x, gaussian_process, n_params=2, return_negative=False):
+    # Want to maximize the LCB
+    x_to_predict = x.reshape(-1, n_params)
+
+    mu, sigma = gaussian_process.predict(x_to_predict, return_std=True)
+    LCB = 2 * sigma - mu
+    if return_negative:
+        LCB = -1 * LCB
+    return LCB
+
 
 def expected_improvement(x, gaussian_process, evaluated_loss, greater_is_better=False, n_params=1, return_negative=False):
     """
@@ -81,50 +92,24 @@ def expected_improvement(x, gaussian_process, evaluated_loss, greater_is_better=
 #     return -1 * expected_improvement
 
 
-def sample_next_hyperparameter(acquisition_func, gaussian_process, evaluated_loss, greater_is_better=False,
-                               bounds=(0, 10), n_restarts=25):
+def sample_next_hyperparameter(acquisition_func, gaussian_process, bounds, maximizeAQ=True):
     """ sample_next_hyperparameter
 
     Proposes the next hyperparameter to sample the loss function for.
 
     Arguments:
     ----------
-        acquisition_func: function.
-            Acquisition function to optimise.
-        gaussian_process: GaussianProcessRegressor object.
-            Gaussian process trained on previously evaluated hyperparameters.
-        evaluated_loss: array-like, shape = [n_obs,]
-            Numpy array that contains the values off the loss function for the previously
-            evaluated hyperparameters.
-        greater_is_better: Boolean.
-            Boolean flag that indicates whether the loss function is to be maximised or minimised.
-        bounds: Tuple.
-            Bounds for the L-BFGS optimiser.
-        n_restarts: integer.
-            Number of times to run the minimiser with different starting points.
-
+        acqisition_func: the function that we are optimizing
+        gaussian_process: model
+        bounds: [n_params, 2] matrix of lb ub pairs for each parameter
+        maximizeAQ: Whether the next sample should be the one that maximizes the acquisition function
     """
-    best_x = None
-    best_acquisition_value = 1
-    n_params = bounds.shape[0]
+    #PSO minimizes the acquisition function so we want to minimize the negative LCB (a.k.a. maximize the LCB)
+    xopt, fopt = pso(acquisition_func, bounds[:,0], bounds[:,1], args=(gaussian_process, bounds.shape[0], maximizeAQ))
+    return xopt
 
-    for starting_point in np.random.uniform(bounds[:, 0], bounds[:, 1], size=(n_restarts, n_params)):
-
-        res = minimize(fun=acquisition_func,
-                       x0=starting_point.reshape(1, -1),
-                       bounds=bounds,
-                       method='L-BFGS-B',
-                       args=(gaussian_process, evaluated_loss, greater_is_better, n_params, True))
-
-        if res.fun < best_acquisition_value:
-            best_acquisition_value = res.fun
-            best_x = res.x
-
-    return best_x
-
-
-def bayesian_optimisation(n_iters, sample_loss, bounds, x0=None, n_pre_samples=5,
-                          gp_params=None, random_search=False, alpha=1e-5, epsilon=1e-7):
+def bayesian_optimisation(n_iters, sample_loss, bounds, x0=None, n_pre_samples=2,
+                          gp_params=None, random_search=100, epsilon=1e-7):
     """ bayesian_optimisation
 
     Uses Gaussian Processes to optimise the loss function `sample_loss`.
@@ -174,9 +159,8 @@ def bayesian_optimisation(n_iters, sample_loss, bounds, x0=None, n_pre_samples=5
     if gp_params is not None:
         model = gp.GaussianProcessRegressor(**gp_params)
     else:
-        kernel = gp.kernels.Matern()
+        kernel = gp.kernels.RBF()
         model = gp.GaussianProcessRegressor(kernel=kernel,
-                                            alpha=alpha,
                                             n_restarts_optimizer=10,
                                             normalize_y=True)
 
@@ -187,13 +171,14 @@ def bayesian_optimisation(n_iters, sample_loss, bounds, x0=None, n_pre_samples=5
         # Sample next hyperparameter
         if random_search:
             x_random = np.random.uniform(bounds[:, 0], bounds[:, 1], size=(random_search, n_params))
-            ei = expected_improvement(x_random, model, yp, greater_is_better=True, n_params=n_params)
-            next_sample = x_random[np.argmax(ei), :]
+            lcb = lowerConfidenceBound(x_random, model, yp, n_params=n_params)
+            # ei = expected_improvement(x_random, model, yp, greater_is_better=True, n_params=n_params)
+            next_sample = x_random[np.argmax(lcb), :]
         else:
-            next_sample = sample_next_hyperparameter(expected_improvement, model, yp, greater_is_better=True, bounds=bounds, n_restarts=100)
-
+            next_sample = sample_next_hyperparameter(lowerConfidenceBound, model, bounds, maximizeAQ=True)
         # Duplicates will break the GP. In case of a duplicate, we will randomly sample a next query point.
         if np.any(np.abs(next_sample - xp) <= epsilon):
+            print("gp.py: Duplicate in next_sample, choosing next sample randomly")
             next_sample = np.random.uniform(bounds[:, 0], bounds[:, 1], bounds.shape[0])
 
         # Sample loss for new set of parameters
